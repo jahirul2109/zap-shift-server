@@ -11,11 +11,13 @@ app.use(cors())
 app.use(express.json());
 
 
-
+let parcelCollection ; 
 const connectToMongoDB = async () => {
     try {
         await client.connect();
-        
+        const db = client.db('zap_shift_db');
+         parcelCollection = db.collection('parcels');
+
     } catch (err) {
         console.dir(err);
     }
@@ -28,6 +30,11 @@ app.use(async (req, res, next) => {
 
 
 
+app.post('/parcels', async(req , res )=> {
+    const data = req.body;
+    const result = await parcelCollection.insertOne(data);
+    res.send(result)
+})
 
 app.get('/', (req, res) => {
     res.send('Hello World!')
