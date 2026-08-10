@@ -34,6 +34,7 @@ app.use(async (req, res, next) => {
 
 app.post('/parcels', async (req, res) => {
     const data = req.body;
+    data.createAt = new Date();
     const result = await parcelCollection.insertOne(data);
     res.send(result)
 })
