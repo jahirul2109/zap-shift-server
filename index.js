@@ -13,6 +13,7 @@ app.use(express.json());
 
 
 let parcelCollection;
+let paymentCollection;
 const connectToMongoDB = async () => {
     try {
         await client.connect();
@@ -38,13 +39,21 @@ app.post('/parcels', async (req, res) => {
 })
 
 app.get('/parcels', async (req, res) => {
-    const query = {};
-    const { email } = req.query;
-    if (email) {
-        query.senderEmail = email;
+    try {
+        const query = {};
+        const { email } = req.query;
+        if (email) {
+            query.senderEmail = email;
+        }
+        const result = await parcelCollection.find(query).toArray();
+        res.send(result)
     }
-    const result = await parcelCollection.find(query).toArray();
-    res.send(result)
+    catch (err) {
+        res.status(500).json({
+            success: false,
+            message: err.message
+        })
+    }
 })
 
 app.delete("/parcels/:id", async (req, res) => {
@@ -56,6 +65,7 @@ app.delete("/parcels/:id", async (req, res) => {
 
 
 // Payment Methood
+// 1st one 
 app.post('/create_checkout_session', async (req, res) => {
     try {
         const paymentInfo = req.body;
@@ -92,7 +102,7 @@ app.post('/create_checkout_session', async (req, res) => {
         })
     }
 })
-
+// 2nd one 
 app.post('/payment_checkout_session', async (req, res) => {
     try {
         const paymentInfo = req.body;
@@ -107,7 +117,7 @@ app.post('/payment_checkout_session', async (req, res) => {
                             name: paymentInfo.parcelName
                         }
                     },
-                    quantity : 1
+                    quantity: 1
                 }
             ],
             mode: "payment",
@@ -118,8 +128,9 @@ app.post('/payment_checkout_session', async (req, res) => {
             success_url: `${process.env.SITE_URL}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
             cancel_url: `${process.env.SITE_URL}/dashboard/payment-cancel`
         })
+        const createAt = new Date();
         // console.log(session.url)
-        res.send({ url: session.url })
+        res.send({ url: session.url , createAt })
     }
     catch (err) {
         console.log(err.message)
@@ -129,26 +140,30 @@ app.post('/payment_checkout_session', async (req, res) => {
     }
 })
 
-app.patch('/payment-verification',async (req, res)=> {
-    const {session_id} = req.query ; 
+app.patch('/payment-verification', async (req, res) => {
+    const { session_id } = req.query;
     // console.log(session_id)
     const session = await stripe.checkout.sessions.retrieve(session_id);
     if (session.payment_status === "paid") {
         const parcelId = session.metadata.parcelId;
-        const query = {_id : new ObjectId(parcelId)};
+        const query = { _id: new ObjectId(parcelId) };
         const update = {
-            $set : {
-                payment : "paid"
+            $set: {
+                payment: "paid"
             }
         }
-        const result = await parcelCollection.updateOne(query , update);
+        const result = await parcelCollection.updateOne(query, update);
         res.send({
-            success : true , 
-            message : "Payment Status Updated"
+            success: true,
+            message: "Payment Status Updated"
         })
+        const paymentInfo = {
+            paymentIntent : session.payment_intent,
+            
+        }
     }
-    // console.log("retirve data", session)
-    res.send({success: false})
+    console.log("retirve data", session)
+    res.send({ success: false })
 })
 
 app.get('/', (req, res) => {
