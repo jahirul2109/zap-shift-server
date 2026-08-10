@@ -11,6 +11,14 @@ const port = process.env.PORT || 3000;
 app.use(cors())
 app.use(express.json());
 
+const generateTrackingId = () => {
+    const random = Math.random()
+        .toString(36)
+        .substring(2, 8)
+        .toUpperCase();
+
+    return `TRK-${Date.now()}-${random}`;
+};
 
 let parcelCollection;
 let paymentCollection;
@@ -19,6 +27,7 @@ const connectToMongoDB = async () => {
         await client.connect();
         const db = client.db('zap_shift_db');
         parcelCollection = db.collection('parcels');
+        paymentCollection = db.collection("paymentInfo")
 
     } catch (err) {
         console.dir(err);
@@ -46,7 +55,7 @@ app.get('/parcels', async (req, res) => {
         if (email) {
             query.senderEmail = email;
         }
-        const result = await parcelCollection.find(query).toArray();
+        const result = await parcelCollection.find(query).sort({ createAt: -1 }).toArray();
         res.send(result)
     }
     catch (err) {
@@ -115,7 +124,7 @@ app.post('/payment_checkout_session', async (req, res) => {
                         currency: "usd",
                         unit_amount: ammount,
                         product_data: {
-                            name: paymentInfo.parcelName
+                            name: ` Pay For ${paymentInfo.parcelName}`
                         }
                     },
                     quantity: 1
@@ -124,14 +133,15 @@ app.post('/payment_checkout_session', async (req, res) => {
             mode: "payment",
             customer_email: paymentInfo.coustomerEmail,
             metadata: {
-                parcelId: paymentInfo.parcelId
+                parcelId: paymentInfo.parcelId,
+                parcelName: paymentInfo.parcelName
             },
             success_url: `${process.env.SITE_URL}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
             cancel_url: `${process.env.SITE_URL}/dashboard/payment-cancel`
         })
         const createAt = new Date();
         // console.log(session.url)
-        res.send({ url: session.url , createAt })
+        res.send({ url: session.url, createAt })
     }
     catch (err) {
         console.log(err.message)
@@ -142,29 +152,58 @@ app.post('/payment_checkout_session', async (req, res) => {
 })
 
 app.patch('/payment-verification', async (req, res) => {
-    const { session_id } = req.query;
-    // console.log(session_id)
-    const session = await stripe.checkout.sessions.retrieve(session_id);
-    if (session.payment_status === "paid") {
+    try {
+        const { session_id } = req.query;
+        const session = await stripe.checkout.sessions.retrieve(session_id);
+        if (session.payment_status !== "paid") {
+            res.status(400).send({
+                success: true,
+                message: "Payment Not paid"
+            })
+        }
+        const trackId = generateTrackingId();
+        console.log("trackid", trackId)
         const parcelId = session.metadata.parcelId;
         const query = { _id: new ObjectId(parcelId) };
         const update = {
             $set: {
-                payment: "paid"
+                payment: "paid",
+                trackingId: trackId
             }
         }
         const result = await parcelCollection.updateOne(query, update);
+        const paymentInfo = {
+            paymentIntent: session.payment_intent,
+            trackingId: trackId,
+            parcelId: session.metadata.parcelId,
+            parcelName: session.metadata.parcelName,
+            customerEmail: session.customer_email,
+            currency: session.currency,
+            cost: session.amount_total / 100,
+            paidAt: new Date()
+        }
+        const resultPayment = await paymentCollection.insertOne(paymentInfo)
         res.send({
             success: true,
-            message: "Payment Status Updated"
+            message: "Payment Verification Successfully",
+            resultPayment: resultPayment,
+            result: result,
+            trackingId: trackId,
+            TransactionId: session.payment_intent,
+            parcelId: parcelId,
         })
-        const paymentInfo = {
-            paymentIntent : session.payment_intent,
-            
-        }
     }
-    console.log("retirve data", session)
-    res.send({ success: false })
+    catch (err) {
+        console.log(err.message)
+        res.status(500).send({
+            success: false,
+            message: err.message
+        })
+    }
+})
+
+app.get("/payment-info/:id", async (req, res) => {
+    const { } = req.body;
 })
 
 app.get('/', (req, res) => {
