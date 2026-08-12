@@ -161,9 +161,18 @@ app.patch('/payment-verification', async (req, res) => {
                 message: "Payment Not paid"
             })
         }
+        const paymentIntent = session.payment_intent;
         const trackId = generateTrackingId();
-        console.log("trackid", trackId)
         const parcelId = session.metadata.parcelId;
+        const existPaymentIentent = await paymentCollection.findOne({ paymentIntent });
+        if (existPaymentIentent) {
+          return  res.status(400).send({
+                message: "Already Exsit",
+                TransactionId: paymentIntent,
+                trackingId : existPaymentIentent.trackingId 
+
+            })
+        }
         const query = { _id: new ObjectId(parcelId) };
         const update = {
             $set: {
@@ -173,7 +182,7 @@ app.patch('/payment-verification', async (req, res) => {
         }
         const result = await parcelCollection.updateOne(query, update);
         const paymentInfo = {
-            paymentIntent: session.payment_intent,
+            paymentIntent: paymentIntent,
             trackingId: trackId,
             parcelId: session.metadata.parcelId,
             parcelName: session.metadata.parcelName,
@@ -202,8 +211,23 @@ app.patch('/payment-verification', async (req, res) => {
     }
 })
 
-app.get("/payment-info/:id", async (req, res) => {
-    const { } = req.body;
+app.get("/payment-info", async (req, res) => {
+    try {
+        const { email } = req.query;
+        const query = {};
+        if (email) {
+            query.customerEmail = email
+        };
+        const result = await paymentCollection.find(query).toArray();
+        res.send(result);
+    }
+    catch (err) {
+        console.log(err.message)
+        res.status(500).send({
+            success: false,
+            message: "Server Error"
+        })
+    }
 })
 
 app.get('/', (req, res) => {
