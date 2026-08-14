@@ -22,12 +22,14 @@ const generateTrackingId = () => {
 
 let parcelCollection;
 let paymentCollection;
+let userCollection;
 const connectToMongoDB = async () => {
     try {
         await client.connect();
         const db = client.db('zap_shift_db');
         parcelCollection = db.collection('parcels');
         paymentCollection = db.collection("paymentInfo")
+        userCollection = db.collection("users")
 
     } catch (err) {
         console.dir(err);
@@ -39,8 +41,31 @@ app.use(async (req, res, next) => {
     next()
 })
 
-// Parcels
+app.post('/users' , async(req , res)=> {
+try {
+        const newUser = req.body;   
+    const email = newUser.email;
+    newUser.creatAt = new Date();
+    newUser.role= "user";
+    const exsitUser = await userCollection.findOne({email});
+    if(exsitUser) {
+        return res.send({
+            message : "User Already Exsit"
+        })
+    }
+    const result = await  userCollection.insertOne(newUser);
+    res.send(result);
+}
+catch(err) {
+    console.log("user",err.message)
+    res.status(500).send({
+        success : false , 
+        message : "Server Error"
+    })
+}
+})
 
+// Parcels
 app.post('/parcels', async (req, res) => {
     const data = req.body;
     data.createAt = new Date();
@@ -166,7 +191,7 @@ app.patch('/payment-verification', async (req, res) => {
         const parcelId = session.metadata.parcelId;
         const existPaymentIentent = await paymentCollection.findOne({ paymentIntent });
         if (existPaymentIentent) {
-          return  res.status(400).send({
+          return  res.send({
                 message: "Already Exsit",
                 TransactionId: paymentIntent,
                 trackingId : existPaymentIentent.trackingId 
@@ -218,7 +243,7 @@ app.get("/payment-info", async (req, res) => {
         if (email) {
             query.customerEmail = email
         };
-        const result = await paymentCollection.find(query).toArray();
+        const result = await paymentCollection.find(query).sort({paidAt : 1}).toArray();
         res.send(result);
     }
     catch (err) {
