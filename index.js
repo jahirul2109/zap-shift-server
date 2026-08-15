@@ -5,11 +5,19 @@ const app = express();
 const cors = require('cors');
 const client = new MongoClient(`mongodb+srv://${process.env.USER_ID}:${process.env.USER_PASS}@cluster0.b6s1ev2.mongodb.net/?appName=Cluster0`);
 const stripe = require('stripe')(process.env.PAYMENT_KEY);
+const { initializeApp, cert } = require("firebase-admin");
+const { getAuth } = require("firebase-admin/auth");
 const port = process.env.PORT || 3000;
 
 // middleware
 app.use(cors())
 app.use(express.json());
+
+const serviceAccount = require("./zap-shift-firebase-adminsdk.json");
+
+initializeApp({
+    credential: cert(serviceAccount)
+});
 
 const generateTrackingId = () => {
     const random = Math.random()
@@ -25,6 +33,10 @@ let paymentCollection;
 let userCollection;
 const connectToMongoDB = async () => {
     try {
+        if (userCollection) {
+            console.log("already connected")
+            return;
+        }
         await client.connect();
         const db = client.db('zap_shift_db');
         parcelCollection = db.collection('parcels');
@@ -36,34 +48,57 @@ const connectToMongoDB = async () => {
     }
 }
 
+const firebaseVerificatoin = async (req, res, next) => {
+    try {
+        const authorization = req.headers.authorization;
+        if (!authorization) {
+            return res.status(401).send({
+                message: "Unauthorizat Access"
+            })
+        }
+        const token = authorization.split(" ")[1]
+        const decode = await getAuth().verifyIdToken(token);
+        req.decodeEmail = decode.email;
+        next()
+    }
+    catch (err) {
+        console.log(err.message)
+        return res.status(401).send("unauthorizat access")
+    }
+
+}
 app.use(async (req, res, next) => {
     await connectToMongoDB();
     next()
 })
-
-app.post('/users' , async(req , res)=> {
-try {
-        const newUser = req.body;   
-    const email = newUser.email;
-    newUser.creatAt = new Date();
-    newUser.role= "user";
-    const exsitUser = await userCollection.findOne({email});
-    if(exsitUser) {
-        return res.send({
-            message : "User Already Exsit"
+// user
+app.post('/users', async (req, res) => {
+    try {
+        // console.log("heder", req.headers)
+        // console.log(req.decodeEmail)
+        const newUser = req.body;
+        const email = newUser.email;
+        newUser.creatAt = new Date();
+        newUser.role = "user";
+        const exsitUser = await userCollection.findOne({ email });
+        if (exsitUser) {
+            return res.send({
+                message: "User Already Exsit"
+            })
+        }
+        const result = await userCollection.insertOne(newUser);
+        res.send(result);
+    }
+    catch (err) {
+        console.log("user", err.message)
+        res.status(500).send({
+            success: false,
+            message: "Server Error"
         })
     }
-    const result = await  userCollection.insertOne(newUser);
-    res.send(result);
-}
-catch(err) {
-    console.log("user",err.message)
-    res.status(500).send({
-        success : false , 
-        message : "Server Error"
-    })
-}
 })
+
+// riders 
 
 // Parcels
 app.post('/parcels', async (req, res) => {
@@ -73,12 +108,18 @@ app.post('/parcels', async (req, res) => {
     res.send(result)
 })
 
-app.get('/parcels', async (req, res) => {
+app.get('/parcels', firebaseVerificatoin, async (req, res) => {
+    console.log(req.decodeEmail)
     try {
         const query = {};
         const { email } = req.query;
         if (email) {
             query.senderEmail = email;
+        }
+        if (email !== req.decodeEmail) {
+            return res.status(403).send({
+                message: "forbidden access"
+            })
         }
         const result = await parcelCollection.find(query).sort({ createAt: -1 }).toArray();
         res.send(result)
@@ -191,10 +232,10 @@ app.patch('/payment-verification', async (req, res) => {
         const parcelId = session.metadata.parcelId;
         const existPaymentIentent = await paymentCollection.findOne({ paymentIntent });
         if (existPaymentIentent) {
-          return  res.send({
+            return res.send({
                 message: "Already Exsit",
                 TransactionId: paymentIntent,
-                trackingId : existPaymentIentent.trackingId 
+                trackingId: existPaymentIentent.trackingId
 
             })
         }
@@ -243,7 +284,7 @@ app.get("/payment-info", async (req, res) => {
         if (email) {
             query.customerEmail = email
         };
-        const result = await paymentCollection.find(query).sort({paidAt : 1}).toArray();
+        const result = await paymentCollection.find(query).sort({ paidAt: 1 }).toArray();
         res.send(result);
     }
     catch (err) {
