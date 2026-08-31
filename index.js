@@ -28,7 +28,9 @@ const generateTrackingId = () => {
     return `TRK-${Date.now()}-${random}`;
 };
 
+let trackingCollection
 let parcelCollection;
+let riderCollection;
 let paymentCollection;
 let userCollection;
 const connectToMongoDB = async () => {
@@ -42,12 +44,49 @@ const connectToMongoDB = async () => {
         parcelCollection = db.collection('parcels');
         paymentCollection = db.collection("paymentInfo")
         userCollection = db.collection("users")
+        riderCollection = db.collection("riders")
+        trackingCollection = db.collection("trackings")
+
+        await paymentCollection.createIndex({
+            paymentIntent: 1
+        },
+            {
+                unique: true
+            }
+        )
+        await trackingCollection.createIndex({
+            trackingId: 1,
+            status: 1
+        },
+            {
+                unique: true
+            })
 
     } catch (err) {
         console.dir(err);
     }
 }
 
+const trackingLogs = async (trackingId, status) => {
+    try {
+        await trackingCollection.insertOne({
+            trackingId,
+            status,
+            statusDetails: status.split("_").join(" "),
+            createAt: new Date(),
+        });
+    } catch (error) {
+
+        if (error.code === 11000) {
+            console.log(`Duplicate tracking status: ${status}`);
+            return;
+        }
+
+        throw error;
+    }
+};
+
+// verification
 const firebaseVerificatoin = async (req, res, next) => {
     try {
         const authorization = req.headers.authorization;
@@ -67,17 +106,56 @@ const firebaseVerificatoin = async (req, res, next) => {
     }
 
 }
+
+const adminVerification = async (req, res, next) => {
+    const email = req.decodeEmail;
+    const query = { email }
+    const user = await userCollection.findOne(query);
+    console.log(user)
+    if (!user) {
+        return res.status(404).send({
+            message: "User not found"
+        })
+    }
+    if (user.role !== "admin") {
+        return res.status(403).send({
+            message: "forbidden access"
+        })
+    }
+    next();
+
+}
 app.use(async (req, res, next) => {
     await connectToMongoDB();
     next()
 })
-// user
-app.post('/users', async (req, res) => {
+
+// Track Id to check Delivery Status 
+app.get('/trackId/:id/status', async (req, res) => {
     try {
-        // console.log("heder", req.headers)
-        // console.log(req.decodeEmail)
+        const query = { trackingId: req.params.id };
+        const result = await trackingCollection.find(query).sort({ createAt: 1 }).toArray();
+        res.send(result);
+    }
+    catch (error) {
+        console.log(error.message)
+        res.status(500).send({
+            message: "Server Error"
+        })
+    }
+})
+
+
+// user
+app.post('/users', firebaseVerificatoin, async (req, res) => {
+    try {
         const newUser = req.body;
         const email = newUser.email;
+        if (email !== req.decodeEmail) {
+            return res.status(403).send({
+                message: "Forbidden accss"
+            })
+        }
         newUser.creatAt = new Date();
         newUser.role = "user";
         const exsitUser = await userCollection.findOne({ email });
@@ -98,28 +176,237 @@ app.post('/users', async (req, res) => {
     }
 })
 
-// riders 
-
-// Parcels
-app.post('/parcels', async (req, res) => {
-    const data = req.body;
-    data.createAt = new Date();
-    const result = await parcelCollection.insertOne(data);
-    res.send(result)
+app.get('/users', firebaseVerificatoin, async (req, res) => {
+    try {
+        const result = await userCollection.find().toArray();
+        res.send(result)
+    }
+    catch (err) {
+        res.status(500).send({
+            message: "Server Error"
+        })
+    }
 })
 
-app.get('/parcels', firebaseVerificatoin, async (req, res) => {
-    console.log(req.decodeEmail)
+app.get('/users/:email/role', firebaseVerificatoin, async (req, res) => {
     try {
-        const query = {};
-        const { email } = req.query;
-        if (email) {
-            query.senderEmail = email;
-        }
+        const email = req.params.email;
         if (email !== req.decodeEmail) {
             return res.status(403).send({
                 message: "forbidden access"
             })
+        }
+        const query = { email };
+        const result = await userCollection.findOne(query);
+        res.send(result)
+    }
+    catch (err) {
+        console.log(err)
+        return res.status(500).send({
+            message: "Server Error"
+        })
+    }
+})
+
+app.patch('/users/:id', firebaseVerificatoin, adminVerification, async (req, res) => {
+    try {
+        const id = req.params.id;
+        const { role } = req.body
+        const query = { _id: new ObjectId(id) }
+        const updateInfo = {
+            $set: {
+                role: role
+            }
+        }
+        const result = await userCollection.updateOne(query, updateInfo);
+        res.send(result)
+    }
+    catch (err) {
+        console.log(err)
+        return res.status(500).send({
+            message: "Server Error"
+        })
+    }
+})
+
+
+// riders 
+app.post('/riders', firebaseVerificatoin, async (req, res) => {
+    try {
+        const rider = req.body;
+        const email = rider.email;
+        if (email !== req.decodeEmail) {
+            return res.status(401).send({
+                message: "Fobidden access"
+            })
+        }
+        rider.status = "pending"
+        rider.creatAt = new Date();
+        const riderExist = await riderCollection.findOne({ email: email });
+        if (riderExist) {
+            return res.status(409).send({
+                message: "riders already exist"
+            })
+        }
+        const result = await riderCollection.insertOne(rider);
+        res.send(result)
+    }
+    catch (err) {
+        console.log(err)
+        return res.status(500).send({
+            message: "Server Error"
+        })
+    }
+
+})
+
+app.get("/riders", async (req, res) => {
+    const { workStatus, district } = req.query;
+    const query = {}
+    if (workStatus) {
+        query.workStatus = workStatus
+    }
+    if (district) {
+        query.district = district
+    }
+    const result = await riderCollection.find(query).toArray();
+    res.send(result)
+})
+
+app.patch("/riders/:id", async (req, res) => {
+    const { status, email } = req.body;
+    const id = req.params.id;
+    const cursor = { _id: new ObjectId(id) };
+    const update = {
+        $set: {
+            status: status
+        }
+    }
+    if (status === "apprroved") {
+        update.$set.workStatus = "available"
+    }
+    if (status === "rejected") {
+        update.$set.workStatus = "unavailable"
+    }
+    const result = await riderCollection.updateOne(cursor, update);
+    const query = { email };
+    const updateUser = {
+        $set: {
+            role: "rider"
+        }
+    }
+    if (status === "apprroved") {
+        const updateRole = await userCollection.updateOne(query, updateUser);
+    }
+    res.send(result)
+})
+
+app.delete("/riders/:id", firebaseVerificatoin, adminVerification, async (req, res) => {
+    const id = req.params.id;
+    const query = { _id: new ObjectId(id) };
+    const result = await riderCollection.deleteOne(query);
+    res.send(result);
+})
+
+app.get('/rider-stats/:email', firebaseVerificatoin, async (req, res) => {
+    try {
+        const email = req.params.email;
+        if (email !== req.decodeEmail) {
+            return res.status(403).send({
+                message: "forbidden access"
+            })
+        }
+        const result = await parcelCollection.aggregate([
+            {
+                $match: {
+                    riderEmail: email
+                }
+            }, {
+                $group: {
+                    _id: "$deliveryStatus",
+                    count: { $sum: 1 }
+                }
+            }
+        ]).toArray();
+        res.send(result)
+    }
+    catch (err) {
+        console.log(err.message)
+        return res.status(500).send({
+            message: "Server Error"
+        })
+    }
+})
+
+
+// Parcels
+app.post('/parcels', firebaseVerificatoin, async (req, res) => {
+    try {
+        const data = req.body;
+        if (req.decodeEmail !== data.senderEmail) {
+            return res.status(500).send({
+                message: "Server Error"
+            })
+        }
+        const trackId = generateTrackingId();
+        data.createAt = new Date();
+        data.trackingId = trackId;
+        await trackingLogs(trackId, "parcel_created")
+        const result = await parcelCollection.insertOne(data);
+        res.send(result)
+    }
+    catch (err) {
+        console.log(err.message)
+        return res.status(500).send({
+            message: "Server Error"
+        })
+    }
+})
+// get rider base parsel
+app.get('/parcels/:ridermail/rider', firebaseVerificatoin, async (req, res) => {
+    try {
+        const email = req.params.ridermail;
+        if (email !== req.decodeEmail) {
+            return res.status(403).send({
+                message: "forbidden access"
+            })
+        }
+        const query = {
+            riderEmail: email,
+            deliveryStatus: {
+                $nin: [
+                    "delivered",
+                    "cancelled"
+                ]
+            }
+        };
+
+        const result = await parcelCollection.find(query).toArray();
+        res.send(result);
+    }
+    catch (err) {
+        console.log(err.message)
+        return res.status(500).send({
+            message: "Server Error"
+        })
+    }
+})
+// user  get
+app.get('/parcels', firebaseVerificatoin, async (req, res) => {
+    console.log(req.decodeEmail)
+    try {
+        const query = {};
+        const { email, deliveryStatus } = req.query;
+        if (email !== req.decodeEmail) {
+            return res.status(403).send({
+                message: "Forbidden access"
+            })
+        }
+        if (email) {
+            query.senderEmail = email;
+        }
+        if (deliveryStatus) {
+            query.deliveryStatus = deliveryStatus;
         }
         const result = await parcelCollection.find(query).sort({ createAt: -1 }).toArray();
         res.send(result)
@@ -131,55 +418,200 @@ app.get('/parcels', firebaseVerificatoin, async (req, res) => {
         })
     }
 })
-
-app.delete("/parcels/:id", async (req, res) => {
-    const id = req.params.id;
-    const cursor = { _id: new ObjectId(id) };
-    const result = parcelCollection.deleteOne(cursor);
-    res.send(result);
+// admin get 
+app.get('/parcels', firebaseVerificatoin, adminVerification, async (req, res) => {
+    console.log(req.decodeEmail)
+    try {
+        const result = await parcelCollection.find({ payment: "paid" }).sort({ createAt: -1 }).toArray();
+        res.send(result)
+    }
+    catch (err) {
+        res.status(500).json({
+            success: false,
+            message: err.message
+        })
+    }
 })
+app.delete("/parcels/:id", firebaseVerificatoin, async (req, res) => {
+    try {
+        const id = req.params.id;
+        const cursor = { _id: new ObjectId(id), senderEmail: req.decodeEmail };
+        const result = parcelCollection.deleteOne(cursor);
+        res.send(result);
+    }
+    catch (err) {
+        console.log(err.message)
+        res.status(500).json({
+            success: false,
+            message: err.message
+        })
+    }
+})
+app.patch("/parcels/:id/deliveryStatus", firebaseVerificatoin, async (req, res) => {
+    try {
+        const query = { _id: new ObjectId(req.params.id) }
+        const { deliveryStatus, trackingId, riderEmail } = req.body;
+        if (req.decodeEmail !== riderEmail) {
+            return res.status(403).send({
+                message: "forbidden access"
+            })
+        }
+        const updateStatus = {
+            $set: {
+                deliveryStatus: deliveryStatus == "cancelled" ? "pending_pickup" : deliveryStatus
+            }
+        }
+        await trackingLogs(trackingId, deliveryStatus)
+        const result = await parcelCollection.updateOne(query, updateStatus);
 
+        if (deliveryStatus === "delivered" || deliveryStatus === "cancelled") {
+            const updateWorkStatus = {
+                $set: {
+                    workStatus: "available"
+                }
+            }
+            const workStatus = await riderCollection.updateOne({ email: riderEmail }, updateWorkStatus);
+        }
+
+        res.send(result)
+    }
+    catch (err) {
+        console.log(err.message)
+        res.status(500).json({
+            success: false,
+            message: err.message
+        })
+    }
+})
+// only admin can assign  parcel to a rider
+app.patch("/parcels/:id/assigning", firebaseVerificatoin, adminVerification, async (req, res) => {
+    try {
+        const query = { _id: new ObjectId(req.params.id) }
+        const { riderEmail, riderName, deliveryStatus, trackingId } = req.body;
+        console.log("parcel boday" , req.body)
+        const updateParcelInfo = {
+            $set: {
+                riderEmail: riderEmail,
+                riderName: riderName,
+                deliveryStatus: deliveryStatus
+            }
+        }
+        trackingLogs(trackingId, deliveryStatus)
+        const result = await parcelCollection.updateOne(query, updateParcelInfo);
+        const updateRiderInfo = {
+            $set: {
+                workStatus: "in_delivery"
+            }
+        }
+        const resultRider = await riderCollection.updateOne({ email: riderEmail }, updateRiderInfo);
+        res.send(resultRider)
+    }
+    catch (err) {
+        console.log(err.message)
+        res.status(500).json({
+            success: false,
+            message: err.message
+        })
+    }
+
+})
+app.get("/user-stats/:email", firebaseVerificatoin, async (req, res) => {
+    const email = req.params.email;
+    if (email !== req.decodeEmail) {
+        return res.status(403).send({
+            message: "forbidden access"
+        })
+    }
+    try {
+        const result = await parcelCollection.aggregate([
+            {
+                $match: {
+                    senderEmail: email ,
+                    payment : "paid"
+                }
+            },
+            {
+                $facet: {
+                    total: [
+                        {
+                            $group: {
+                                _id: null,
+                                count: {
+                                    $sum: 1
+                                },
+                                totalCost: {
+                                    $sum: "$cost"
+                                }
+                            }
+                        }
+                    ],
+                    status: [
+                        {
+                            $group: {
+                                _id: "$deliveryStatus",
+                                count: {
+                                    $sum: 1
+                                },
+                                totalCost: {
+                                    $sum: "$cost"
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        ]).toArray();
+        res.send(result)
+    }
+
+    catch (err) {
+        res.status(500).json({
+            success: false,
+            message: err.message
+        });
+    }
+})
 
 // Payment Methood
 // 1st one 
-app.post('/create_checkout_session', async (req, res) => {
-    try {
-        const paymentInfo = req.body;
-        const ammount = parseInt(paymentInfo.cost * 100);
-        const session = await stripe.checkout.sessions.create({
-            line_items: [
-                {
-                    price_data: {
-                        currency: "usd",
-                        unit_amount: ammount,
-                        product_data: {
-                            name: paymentInfo.parcelName,
-                        }
-                    },
-                    quantity: 1
-                }
-            ],
-            customer_email: paymentInfo.coustomerEmail,
-            mode: "payment",
-            metadata: {
-                parcelId: paymentInfo.parcelId
-            },
-            success_url: `${process.env.SITE_URL}/dashboard/payment-success`,
-            cancel_url: `${process.env.SITE_URL}/dashboard/payment-cancel`
-        })
-        // console.log(session.url)
-        res.send({ url: session.url })
-    }
+// app.post('/create_checkout_session', async (req, res) => {
+//     try {
+//         const paymentInfo = req.body;
+//         const ammount = parseInt(paymentInfo.cost * 100);
+//         const session = await stripe.checkout.sessions.create({
+//             line_items: [
+//                 {
+//                     price_data: {
+//                         currency: "usd",
+//                         unit_amount: ammount,
+//                         product_data: {
+//                             name: paymentInfo.parcelName,
+//                         }
+//                     },
+//                     quantity: 1
+//                 }
+//             ],
+//             customer_email: paymentInfo.coustomerEmail,
+//             mode: "payment",
+//             metadata: {
+//                 parcelId: paymentInfo.parcelId
+//             },
+//             success_url: `${process.env.SITE_URL}/dashboard/payment-success`,
+//             cancel_url: `${process.env.SITE_URL}/dashboard/payment-cancel`
+//         })
+//         // console.log(session.url)
+//         res.send({ url: session.url })
+//     }
 
-    catch (error) {
-        console.log(error.message)
-        res.status(500).json({
-            message: error.message
-        })
-    }
-})
+//     catch (error) {
+//         console.log(error.message)
+//         res.status(500).json({
+//             message: error.message
+//         })
+//     }
+// })
 // 2nd one 
-app.post('/payment_checkout_session', async (req, res) => {
+app.post('/payment_checkout_session', firebaseVerificatoin, async (req, res) => {
     try {
         const paymentInfo = req.body;
         const ammount = parseInt(paymentInfo.cost * 100)
@@ -197,10 +629,11 @@ app.post('/payment_checkout_session', async (req, res) => {
                 }
             ],
             mode: "payment",
-            customer_email: paymentInfo.coustomerEmail,
+            customer_email: req.decodeEmail,
             metadata: {
                 parcelId: paymentInfo.parcelId,
-                parcelName: paymentInfo.parcelName
+                parcelName: paymentInfo.parcelName,
+                trackingId: paymentInfo.trackingId,
             },
             success_url: `${process.env.SITE_URL}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
             cancel_url: `${process.env.SITE_URL}/dashboard/payment-cancel`
@@ -217,18 +650,23 @@ app.post('/payment_checkout_session', async (req, res) => {
     }
 })
 
-app.patch('/payment-verification', async (req, res) => {
+app.patch('/payment-verification', firebaseVerificatoin, async (req, res) => {
     try {
         const { session_id } = req.query;
         const session = await stripe.checkout.sessions.retrieve(session_id);
+        if (session.customer_email !== req.decodeEmail) {
+            return res.status(403).send({
+                success: false,
+                message: "Forbidden access"
+            })
+        }
         if (session.payment_status !== "paid") {
-            res.status(400).send({
-                success: true,
+            return res.status(400).send({
+                success: false,
                 message: "Payment Not paid"
             })
         }
         const paymentIntent = session.payment_intent;
-        const trackId = generateTrackingId();
         const parcelId = session.metadata.parcelId;
         const existPaymentIentent = await paymentCollection.findOne({ paymentIntent });
         if (existPaymentIentent) {
@@ -239,11 +677,14 @@ app.patch('/payment-verification', async (req, res) => {
 
             })
         }
+
+        const trackId = session.metadata.trackingId;
         const query = { _id: new ObjectId(parcelId) };
         const update = {
             $set: {
                 payment: "paid",
-                trackingId: trackId
+                trackingId: trackId,
+                deliveryStatus: "pending_pickup"
             }
         }
         const result = await parcelCollection.updateOne(query, update);
@@ -254,9 +695,11 @@ app.patch('/payment-verification', async (req, res) => {
             parcelName: session.metadata.parcelName,
             customerEmail: session.customer_email,
             currency: session.currency,
+            deliveryStatus: "pending_pickup",
             cost: session.amount_total / 100,
             paidAt: new Date()
         }
+        await trackingLogs(trackId, "assigning_to_rider")
         const resultPayment = await paymentCollection.insertOne(paymentInfo)
         res.send({
             success: true,
@@ -277,14 +720,18 @@ app.patch('/payment-verification', async (req, res) => {
     }
 })
 
-app.get("/payment-info", async (req, res) => {
+app.get("/payment-info", firebaseVerificatoin, async (req, res) => {
     try {
-        const { email } = req.query;
+        const { email, limit } = req.query;
         const query = {};
         if (email) {
-            query.customerEmail = email
+            query.customerEmail = req.decodeEmail
         };
-        const result = await paymentCollection.find(query).sort({ paidAt: 1 }).toArray();
+        const result = await paymentCollection
+            .find(query)
+            .sort({ paidAt: - 1 })
+            .limit(Number(limit))
+            .toArray();
         res.send(result);
     }
     catch (err) {
