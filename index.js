@@ -5,7 +5,7 @@ const app = express();
 const cors = require('cors');
 const client = new MongoClient(`mongodb+srv://${process.env.USER_ID}:${process.env.USER_PASS}@cluster0.b6s1ev2.mongodb.net/?appName=Cluster0`);
 const stripe = require('stripe')(process.env.PAYMENT_KEY);
-const { initializeApp, cert } = require("firebase-admin");
+const admin = require("firebase-admin");
 const { getAuth } = require("firebase-admin/auth");
 // const port = process.env.PORT || 3000;
 
@@ -15,8 +15,8 @@ app.use(express.json());
 const decodedFirebaseKey = Buffer.from(process.env.FIREBASE_SERVICE_KEY, "base64").toString('utf8');
 const serviceAccount = JSON.parse(decodedFirebaseKey);
 
-initializeApp({
-    credential: cert(serviceAccount)
+admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount)
 });
 
 const generateTrackingId = () => {
