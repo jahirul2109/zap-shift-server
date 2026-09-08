@@ -7,7 +7,7 @@ const client = new MongoClient(`mongodb+srv://${process.env.USER_ID}:${process.e
 const stripe = require('stripe')(process.env.PAYMENT_KEY);
 const { initializeApp, cert } = require("firebase-admin");
 const { getAuth } = require("firebase-admin/auth");
-const port = process.env.PORT || 3000;
+// const port = process.env.PORT || 3000;
 
 // middleware
 app.use(cors())
@@ -861,7 +861,4 @@ app.get('/', (req, res) => {
     res.send('Hello World!')
 })
 
-app.listen(port, () => {
-    console.log(`Example app listening on port ${port}`)
-})
 module.exports = app
