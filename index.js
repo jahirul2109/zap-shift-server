@@ -12,8 +12,8 @@ const port = process.env.PORT || 3000;
 // middleware
 app.use(cors())
 app.use(express.json());
-
-const serviceAccount = require("./zap-shift-firebase-adminsdk.json");
+const decodedFirebaseKey = Buffer.from(process.env.FIREBASE_SERVICE_KEY, "base64").toString('utf8');
+const serviceAccount = JSON.parse(decodedFirebaseKey);
 
 initializeApp({
     credential: cert(serviceAccount)
@@ -86,7 +86,7 @@ const trackingLogs = async (trackingId, status) => {
     }
 };
 
-// verification
+// Verification
 const firebaseVerificatoin = async (req, res, next) => {
     try {
         const authorization = req.headers.authorization;
@@ -106,28 +106,36 @@ const firebaseVerificatoin = async (req, res, next) => {
     }
 
 }
-
+// Admin verification
 const adminVerification = async (req, res, next) => {
     const email = req.decodeEmail;
     const query = { email }
     const user = await userCollection.findOne(query);
-    console.log(user)
     if (!user) {
         return res.status(404).send({
             message: "User not found"
         })
     }
     if (user.role !== "admin") {
+        console.log("forbidden access (role)")
         return res.status(403).send({
-            message: "forbidden access"
+            message: "forbidden access (role)"
         })
     }
     next();
 
 }
+// connect db for operation
 app.use(async (req, res, next) => {
-    await connectToMongoDB();
-    next()
+    try {
+        await connectToMongoDB();
+        next();
+    } catch (error) {
+        console.log(error.message);
+        res.status(500).send({
+            message: "Database connection failed"
+        });
+    }
 })
 
 // Track Id to check Delivery Status 
@@ -146,7 +154,7 @@ app.get('/trackId/:id/status', async (req, res) => {
 })
 
 
-// user
+// User
 app.post('/users', firebaseVerificatoin, async (req, res) => {
     try {
         const newUser = req.body;
@@ -201,7 +209,7 @@ app.get('/users/:email/role', firebaseVerificatoin, async (req, res) => {
         res.send(result)
     }
     catch (err) {
-        console.log(err)
+        console.log(err.message)
         return res.status(500).send({
             message: "Server Error"
         })
@@ -222,115 +230,6 @@ app.patch('/users/:id', firebaseVerificatoin, adminVerification, async (req, res
         res.send(result)
     }
     catch (err) {
-        console.log(err)
-        return res.status(500).send({
-            message: "Server Error"
-        })
-    }
-})
-
-
-// riders 
-app.post('/riders', firebaseVerificatoin, async (req, res) => {
-    try {
-        const rider = req.body;
-        const email = rider.email;
-        if (email !== req.decodeEmail) {
-            return res.status(401).send({
-                message: "Fobidden access"
-            })
-        }
-        rider.status = "pending"
-        rider.creatAt = new Date();
-        const riderExist = await riderCollection.findOne({ email: email });
-        if (riderExist) {
-            return res.status(409).send({
-                message: "riders already exist"
-            })
-        }
-        const result = await riderCollection.insertOne(rider);
-        res.send(result)
-    }
-    catch (err) {
-        console.log(err)
-        return res.status(500).send({
-            message: "Server Error"
-        })
-    }
-
-})
-
-app.get("/riders", async (req, res) => {
-    const { workStatus, district } = req.query;
-    const query = {}
-    if (workStatus) {
-        query.workStatus = workStatus
-    }
-    if (district) {
-        query.district = district
-    }
-    const result = await riderCollection.find(query).toArray();
-    res.send(result)
-})
-
-app.patch("/riders/:id", async (req, res) => {
-    const { status, email } = req.body;
-    const id = req.params.id;
-    const cursor = { _id: new ObjectId(id) };
-    const update = {
-        $set: {
-            status: status
-        }
-    }
-    if (status === "apprroved") {
-        update.$set.workStatus = "available"
-    }
-    if (status === "rejected") {
-        update.$set.workStatus = "unavailable"
-    }
-    const result = await riderCollection.updateOne(cursor, update);
-    const query = { email };
-    const updateUser = {
-        $set: {
-            role: "rider"
-        }
-    }
-    if (status === "apprroved") {
-        const updateRole = await userCollection.updateOne(query, updateUser);
-    }
-    res.send(result)
-})
-
-app.delete("/riders/:id", firebaseVerificatoin, adminVerification, async (req, res) => {
-    const id = req.params.id;
-    const query = { _id: new ObjectId(id) };
-    const result = await riderCollection.deleteOne(query);
-    res.send(result);
-})
-
-app.get('/rider-stats/:email', firebaseVerificatoin, async (req, res) => {
-    try {
-        const email = req.params.email;
-        if (email !== req.decodeEmail) {
-            return res.status(403).send({
-                message: "forbidden access"
-            })
-        }
-        const result = await parcelCollection.aggregate([
-            {
-                $match: {
-                    riderEmail: email
-                }
-            }, {
-                $group: {
-                    _id: "$deliveryStatus",
-                    count: { $sum: 1 }
-                }
-            }
-        ]).toArray();
-        res.send(result)
-    }
-    catch (err) {
         console.log(err.message)
         return res.status(500).send({
             message: "Server Error"
@@ -338,183 +237,6 @@ app.get('/rider-stats/:email', firebaseVerificatoin, async (req, res) => {
     }
 })
 
-
-// Parcels
-app.post('/parcels', firebaseVerificatoin, async (req, res) => {
-    try {
-        const data = req.body;
-        if (req.decodeEmail !== data.senderEmail) {
-            return res.status(500).send({
-                message: "Server Error"
-            })
-        }
-        const trackId = generateTrackingId();
-        data.createAt = new Date();
-        data.trackingId = trackId;
-        await trackingLogs(trackId, "parcel_created")
-        const result = await parcelCollection.insertOne(data);
-        res.send(result)
-    }
-    catch (err) {
-        console.log(err.message)
-        return res.status(500).send({
-            message: "Server Error"
-        })
-    }
-})
-// get rider base parsel
-app.get('/parcels/:ridermail/rider', firebaseVerificatoin, async (req, res) => {
-    try {
-        const email = req.params.ridermail;
-        if (email !== req.decodeEmail) {
-            return res.status(403).send({
-                message: "forbidden access"
-            })
-        }
-        const query = {
-            riderEmail: email,
-            deliveryStatus: {
-                $nin: [
-                    "delivered",
-                    "cancelled"
-                ]
-            }
-        };
-
-        const result = await parcelCollection.find(query).toArray();
-        res.send(result);
-    }
-    catch (err) {
-        console.log(err.message)
-        return res.status(500).send({
-            message: "Server Error"
-        })
-    }
-})
-// user  get
-app.get('/parcels', firebaseVerificatoin, async (req, res) => {
-    console.log(req.decodeEmail)
-    try {
-        const query = {};
-        const { email, deliveryStatus } = req.query;
-        if (email !== req.decodeEmail) {
-            return res.status(403).send({
-                message: "Forbidden access"
-            })
-        }
-        if (email) {
-            query.senderEmail = email;
-        }
-        if (deliveryStatus) {
-            query.deliveryStatus = deliveryStatus;
-        }
-        const result = await parcelCollection.find(query).sort({ createAt: -1 }).toArray();
-        res.send(result)
-    }
-    catch (err) {
-        res.status(500).json({
-            success: false,
-            message: err.message
-        })
-    }
-})
-// admin get 
-app.get('/parcels', firebaseVerificatoin, adminVerification, async (req, res) => {
-    console.log(req.decodeEmail)
-    try {
-        const result = await parcelCollection.find({ payment: "paid" }).sort({ createAt: -1 }).toArray();
-        res.send(result)
-    }
-    catch (err) {
-        res.status(500).json({
-            success: false,
-            message: err.message
-        })
-    }
-})
-app.delete("/parcels/:id", firebaseVerificatoin, async (req, res) => {
-    try {
-        const id = req.params.id;
-        const cursor = { _id: new ObjectId(id), senderEmail: req.decodeEmail };
-        const result = parcelCollection.deleteOne(cursor);
-        res.send(result);
-    }
-    catch (err) {
-        console.log(err.message)
-        res.status(500).json({
-            success: false,
-            message: err.message
-        })
-    }
-})
-app.patch("/parcels/:id/deliveryStatus", firebaseVerificatoin, async (req, res) => {
-    try {
-        const query = { _id: new ObjectId(req.params.id) }
-        const { deliveryStatus, trackingId, riderEmail } = req.body;
-        if (req.decodeEmail !== riderEmail) {
-            return res.status(403).send({
-                message: "forbidden access"
-            })
-        }
-        const updateStatus = {
-            $set: {
-                deliveryStatus: deliveryStatus == "cancelled" ? "pending_pickup" : deliveryStatus
-            }
-        }
-        await trackingLogs(trackingId, deliveryStatus)
-        const result = await parcelCollection.updateOne(query, updateStatus);
-
-        if (deliveryStatus === "delivered" || deliveryStatus === "cancelled") {
-            const updateWorkStatus = {
-                $set: {
-                    workStatus: "available"
-                }
-            }
-            const workStatus = await riderCollection.updateOne({ email: riderEmail }, updateWorkStatus);
-        }
-
-        res.send(result)
-    }
-    catch (err) {
-        console.log(err.message)
-        res.status(500).json({
-            success: false,
-            message: err.message
-        })
-    }
-})
-// only admin can assign  parcel to a rider
-app.patch("/parcels/:id/assigning", firebaseVerificatoin, adminVerification, async (req, res) => {
-    try {
-        const query = { _id: new ObjectId(req.params.id) }
-        const { riderEmail, riderName, deliveryStatus, trackingId } = req.body;
-        console.log("parcel boday" , req.body)
-        const updateParcelInfo = {
-            $set: {
-                riderEmail: riderEmail,
-                riderName: riderName,
-                deliveryStatus: deliveryStatus
-            }
-        }
-        trackingLogs(trackingId, deliveryStatus)
-        const result = await parcelCollection.updateOne(query, updateParcelInfo);
-        const updateRiderInfo = {
-            $set: {
-                workStatus: "in_delivery"
-            }
-        }
-        const resultRider = await riderCollection.updateOne({ email: riderEmail }, updateRiderInfo);
-        res.send(resultRider)
-    }
-    catch (err) {
-        console.log(err.message)
-        res.status(500).json({
-            success: false,
-            message: err.message
-        })
-    }
-
-})
 app.get("/user-stats/:email", firebaseVerificatoin, async (req, res) => {
     const email = req.params.email;
     if (email !== req.decodeEmail) {
@@ -526,8 +248,8 @@ app.get("/user-stats/:email", firebaseVerificatoin, async (req, res) => {
         const result = await parcelCollection.aggregate([
             {
                 $match: {
-                    senderEmail: email ,
-                    payment : "paid"
+                    senderEmail: req.decodeEmail,
+                    payment: "paid",
                 }
             },
             {
@@ -571,6 +293,398 @@ app.get("/user-stats/:email", firebaseVerificatoin, async (req, res) => {
         });
     }
 })
+
+app.get('/admin-stats/:email', firebaseVerificatoin, async (req, res) => {
+    try {
+        const email = req.params.email;
+        if (email !== req.decodeEmail) {
+            return res.status(403).send({
+                message: "forbidden access"
+            })
+        }
+        const result = await parcelCollection.aggregate([
+            {
+                $match: {
+                    payment: "paid"
+                }
+            }, {
+                $group: {
+                    _id: "$deliveryStatus",
+                    count: { $sum: 1 },
+                    cost: {
+                        $sum: "$cost"
+                    }
+                }
+            }
+        ]).toArray();
+        res.send(result)
+    }
+    catch (err) {
+        console.log(err.message)
+        return res.status(500).send({
+            message: "Server Error"
+        })
+    }
+})
+
+// riders 
+app.post('/riders', firebaseVerificatoin, async (req, res) => {
+    try {
+        const rider = req.body;
+        const email = rider.email;
+        if (email !== req.decodeEmail) {
+            return res.status(401).send({
+                message: "Fobidden access"
+            })
+        }
+        rider.status = "pending"
+        rider.creatAt = new Date();
+        const riderExist = await riderCollection.findOne({ email: email });
+        if (riderExist) {
+            return res.status(409).send({
+                message: "riders already exist"
+            })
+        }
+        const result = await riderCollection.insertOne(rider);
+        res.send(result)
+    }
+    catch (err) {
+        console.log(err.message)
+        return res.status(500).send({
+            message: "Server Error"
+        })
+    }
+
+})
+
+app.get("/riders", firebaseVerificatoin, adminVerification, async (req, res) => {
+    const { workStatus, district } = req.query;
+    const query = {}
+    if (workStatus) {
+        query.workStatus = workStatus
+    }
+    if (district) {
+        query.district = district
+    }
+    const result = await riderCollection.find(query).toArray();
+    res.send(result)
+})
+
+app.patch("/riders/:id", firebaseVerificatoin, adminVerification, async (req, res) => {
+    const { status, email } = req.body;
+    const id = req.params.id;
+    const cursor = { _id: new ObjectId(id) };
+    const update = {
+        $set: {
+            status: status
+        }
+    }
+    if (status === "apprroved") {
+        update.$set.workStatus = "available"
+    }
+    if (status === "rejected") {
+        update.$set.workStatus = "unavailable"
+    }
+    const result = await riderCollection.updateOne(cursor, update);
+    const query = { email };
+    const updateUser = {
+        $set: {
+            role: "rider"
+        }
+    }
+    if (status === "apprroved") {
+        const updateRole = await userCollection.updateOne(query, updateUser);
+    }
+    res.send(result)
+})
+
+app.delete("/riders/:id", firebaseVerificatoin, adminVerification, async (req, res) => {
+    try {
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const result = await riderCollection.deleteOne(query);
+        res.send(result);
+    }
+    catch (err) {
+        console.log(err.message)
+        return res.status(500).send({
+            message: "Server Error"
+        })
+    }
+})
+
+app.get('/rider-stats/:email', firebaseVerificatoin, async (req, res) => {
+    try {
+        const email = req.params.email;
+        if (email !== req.decodeEmail) {
+            return res.status(403).send({
+                message: "forbidden access"
+            })
+        }
+        const result = await parcelCollection.aggregate([
+            {
+                $match: {
+                    riderEmail: req.decodeEmail,
+                    deliveryStatus: {
+                        $in: [
+                            "delivered",
+                            "pending_pickup"
+                        ]
+                    }
+                }
+            }, {
+                $group: {
+                    _id: "$deliveryStatus",
+                    count: { $sum: 1 },
+                    cost: {
+                        $sum: "$cost"
+                    }
+                }
+            }
+        ]).toArray();
+        res.send(result)
+    }
+    catch (err) {
+        console.log(err.message)
+        return res.status(500).send({
+            message: "Server Error"
+        })
+    }
+})
+
+
+// Parcels
+app.post('/parcels', firebaseVerificatoin, async (req, res) => {
+    try {
+        const data = req.body;
+        if (req.decodeEmail !== data.senderEmail) {
+            return res.status(403).send({
+                message: "Forbidden access"
+            })
+        }
+        const trackId = generateTrackingId();
+        data.createAt = new Date();
+        data.trackingId = trackId;
+        await trackingLogs(trackId, "parcel_created")
+        const result = await parcelCollection.insertOne(data);
+        res.send(result)
+    }
+    catch (err) {
+        console.log(err.message)
+        return res.status(500).send({
+            message: "Server Error"
+        })
+    }
+})
+// get rider for rider order
+app.get('/parcels/:ridermail/rider', firebaseVerificatoin, async (req, res) => {
+    try {
+        const email = req.params.ridermail;
+        if (email !== req.decodeEmail) {
+            return res.status(403).send({
+                message: "forbidden access"
+            })
+        }
+        const query = {
+            riderEmail: email,
+            deliveryStatus: {
+                $nin: [
+                    "delivered",
+                    "cancelled"
+                ]
+            }
+        };
+
+        const result = await parcelCollection.find(query).toArray();
+        res.send(result);
+    }
+    catch (err) {
+        console.log(err.message)
+        return res.status(500).send({
+            message: "Server Error"
+        })
+    }
+})
+app.get('/parcels/:ridermail/riderOrder', firebaseVerificatoin, async (req, res) => {
+    try {
+        const email = req.params.ridermail;
+        const { limit } = req.query;
+        if (email !== req.decodeEmail) {
+            return res.status(403).send({
+                message: "forbidden access"
+            })
+        }
+        const query = {
+            riderEmail: email,
+        };
+
+        const result = await parcelCollection.find(query).limit(Number(limit)).toArray();
+        res.send(result);
+    }
+    catch (err) {
+        console.log(err.message)
+        return res.status(500).send({
+            message: "Server Error"
+        })
+    }
+})
+// admin get 
+app.get('/parcels/admin', firebaseVerificatoin , adminVerification, async (req, res) => {
+    try {
+        const { deliveryStatus } = req.query;
+        const query = {
+            payment: "paid"
+        };
+        if (deliveryStatus) {
+            query.deliveryStatus = deliveryStatus
+        }
+        const result = await parcelCollection.find(query).sort({ createAt: -1 }).toArray();
+        res.send(result)
+    }
+    catch (err) {
+        res.status(500).json({
+            success: false,
+            message: err.message
+        })
+    }
+})
+// user  get
+app.get('/parcels/user', firebaseVerificatoin, async (req, res) => {
+    try {
+        const query = {};
+        const { email, deliveryStatus } = req.query;
+        if (email !== req.decodeEmail) {
+            return res.status(403).send({
+                message: "Forbidden access"
+            })
+        }
+        if (email) {
+            query.senderEmail = email;
+        }
+        if (deliveryStatus) {
+            query.deliveryStatus = deliveryStatus;
+        }
+        const result = await parcelCollection.find(query).sort({ createAt: -1 }).toArray();
+        res.send(result)
+    }
+    catch (err) {
+        res.status(500).json({
+            success: false,
+            message: err.message
+        })
+    }
+})
+// app.get("/parcel/:id", async (req, res) => {
+//     try {
+//         const id = { _id: ObjectId(req.params.id) };
+//         const result = await parcelCollection.findOne(id)
+//         res.send(result)
+//     }
+//     catch (err) {
+//         console.log(err.message)
+//         res.status(500).json({
+//             success: false,
+//             message: err.message
+//         })
+//     }
+// })
+app.delete("/parcels/:id", firebaseVerificatoin, async (req, res) => {
+    try {
+        const id = req.params.id;
+        const cursor = { _id: new ObjectId(id), senderEmail: req.decodeEmail };
+        const result = parcelCollection.deleteOne(cursor);
+        res.send(result);
+    }
+    catch (err) {
+        console.log(err.message)
+        res.status(500).json({
+            success: false,
+            message: err.message
+        })
+    }
+})
+app.patch("/parcels/:id/deliveryStatus", firebaseVerificatoin, async (req, res) => {
+    try {
+        const query = { _id: new ObjectId(req.params.id) }
+        const { reasons } = req.query;
+        const { deliveryStatus, trackingId, riderEmail } = req.body;
+        if (req.decodeEmail !== riderEmail) {
+            return res.status(403).send({
+                message: "forbidden access"
+            })
+        }
+        const updateStatus = {
+            $set: {
+                deliveryStatus: deliveryStatus == "cancelled" ? "pending_pickup" : deliveryStatus
+            }
+        }
+        await trackingLogs(trackingId, deliveryStatus)
+        const result = await parcelCollection.updateOne(query, updateStatus);
+
+        if (deliveryStatus === "delivered" || deliveryStatus === "cancelled") {
+            const updateWorkStatus = {
+                $set: {
+                    workStatus: "available"
+                }
+            }
+            const workStatus = await riderCollection.updateOne({ email: riderEmail }, updateWorkStatus);
+        }
+
+        if (deliveryStatus === "cancelled") {
+            const cancelledInfo = {
+                parcelId: req.params.id,
+                createAt: new Date(),
+                whyCancelled: reasons
+            }
+            await riderCollection.updateOne({ email: riderEmail }, {
+                $push: {
+                    cancelled: cancelledInfo
+                }
+            })
+        }
+
+        res.send(result)
+    }
+    catch (err) {
+        console.log(err.message)
+        res.status(500).json({
+            success: false,
+            message: err.message
+        })
+    }
+})
+// only admin can assign  parcel to a rider
+app.patch("/parcels/:id/assigning", firebaseVerificatoin, adminVerification, async (req, res) => {
+    try {
+        const query = { _id: new ObjectId(req.params.id) }
+        const { riderEmail, riderName, deliveryStatus, trackingId } = req.body;
+        const updateParcelInfo = {
+            $set: {
+                riderEmail: riderEmail,
+                riderName: riderName,
+                deliveryStatus: deliveryStatus
+            }
+        }
+        await trackingLogs(trackingId, deliveryStatus)
+        const result = await parcelCollection.updateOne(query, updateParcelInfo);
+        const updateRiderInfo = {
+            $set: {
+                workStatus: "in_delivery"
+            }
+        }
+        const resultRider = await riderCollection.updateOne({ email: riderEmail }, updateRiderInfo);
+        res.send(resultRider)
+    }
+    catch (err) {
+        console.log(err.message)
+        res.status(500).json({
+            success: false,
+            message: err.message
+        })
+    }
+
+})
+
 
 // Payment Methood
 // 1st one 
@@ -750,3 +864,4 @@ app.get('/', (req, res) => {
 app.listen(port, () => {
     console.log(`Example app listening on port ${port}`)
 })
+module.exports = app
